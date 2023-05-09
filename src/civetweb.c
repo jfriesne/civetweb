@@ -2503,6 +2503,12 @@ struct mg_http2_connection {
 };
 #endif
 
+/** Record of callback-settings that were set via mg_set_misc_socket_callback() */
+struct mg_misc_socket_callback {
+	int sock_fd;  /* Note:  owned by user-code; we won't close this! */
+	mg_misc_socket_flags_provider event_flags_query_callback;
+	mg_misc_socket_data_handler handler_callback;
+};
 
 struct mg_connection {
 	int connection_type; /* see CONNECTION_TYPE_* above */
@@ -2589,6 +2595,13 @@ struct mg_connection {
 #if defined(USE_LUA) && defined(USE_WEBSOCKET)
 	void *lua_websocket_state; /* Lua_State for a websocket connection */
 #endif
+
+	struct mg_misc_socket_callback * misc_socket_callbacks;  /* NULL if none are installed */
+	int num_misc_socket_callbacks; /* how many items misc_socket_callbacks points to */
+
+	struct mg_pollfd basic_mg_poll_fds_array[2];  /* these get used in the common (no-user-socket-callbacks) case */
+	struct mg_pollfd * custom_mg_poll_fds_array;  /* dynamically allocated array (for custom-user-callbacks cases) */
+	int custom_mg_poll_fds_array_size;            /* number of items currently allocated in custom_mg_poll_fds_array (either 0 or 3+) */
 
 	void *tls_user_ptr; /* User defined pointer in thread local storage,
 	                     * for quick access */
@@ -5968,7 +5981,7 @@ mg_poll(struct mg_pollfd *pfd,
 	int ms_now = SOCKET_TIMEOUT_QUANTUM; /* Sleep quantum in ms */
 
 	int check_pollerr = 0;
-	if ((n == 1) && ((pfd[0].events & POLLERR) == 0)) {
+	if ((n <= 1) && ((pfd[0].events & POLLERR) == 0)) {
 		/* If we wait for only one file descriptor, wait on error as well */
 		pfd[0].events |= POLLERR;
 		check_pollerr = 1;
@@ -5989,7 +6002,7 @@ mg_poll(struct mg_pollfd *pfd,
 		result = poll(pfd, n, ms_now);
 		if (result != 0) {
 			int err = ERRNO;
-			if ((result == 1) || (!ERROR_TRY_AGAIN(err))) {
+			if ((result > 0) || (!ERROR_TRY_AGAIN(err))) {
 				/* Poll returned either success (1) or error (-1).
 				 * Forward both to the caller. */
 				if ((check_pollerr)
@@ -6224,6 +6237,71 @@ push_all(struct mg_context *ctx,
 	return nwritten;
 }
 
+/** Returns a pointer to the mg_poll_fd array to pass to mg_poll() for the given mg_connection,
+  * or NULL on failure.
+  * On successful return, (*ret_num_pfds) will contain the number of valid mg_pollfd items that
+  * our returned pointer is pointing to.
+  */
+static struct mg_pollfd *
+mg_get_poll_fds_for_connection(struct mg_connection * conn,
+                               int * ret_num_pfds)
+{
+	struct mg_pollfd * ret = conn->basic_mg_poll_fds_array;
+	int num_pfds = 2;  /* We always have at least client.sock and thread_shutdown_notification_socket */
+	if (conn->num_misc_socket_callbacks > 0) {
+		num_pfds += conn->num_misc_socket_callbacks;
+		if (num_pfds != conn->custom_mg_poll_fds_array_size) {
+			struct mg_pollfd * new_fds = (struct mg_pollfd *)
+				mg_realloc_ctx(conn->custom_mg_poll_fds_array,
+		                        num_pfds*sizeof(conn->custom_mg_poll_fds_array[0]),
+		                        conn->phys_ctx);
+			if (new_fds == NULL) {
+				return NULL;  /* out of memory? */
+			}
+			conn->custom_mg_poll_fds_array = new_fds;
+			conn->custom_mg_poll_fds_array_size = num_pfds;
+		}
+
+		ret = conn->custom_mg_poll_fds_array;
+		for (int i=0; i<conn->num_misc_socket_callbacks; i++) {
+			const struct mg_misc_socket_callback * cb = &conn->misc_socket_callbacks[i];
+			struct mg_pollfd * pfd = &ret[i+2];  /* the first two pfds are internal and will be set up separately at the end of this function */
+			pfd->fd = cb->sock_fd;
+			pfd->events = cb->event_flags_query_callback ? cb->event_flags_query_callback(conn, cb->sock_fd) : POLLIN;
+		}
+	}
+
+	ret[0].fd = conn->client.sock;
+	ret[0].events = POLLIN;
+
+	ret[1].fd = conn->phys_ctx->thread_shutdown_notification_socket;
+	ret[1].events = POLLIN;
+
+	*ret_num_pfds = num_pfds;
+	return ret;
+}
+
+static int
+mg_dispatch_misc_socket_callbacks(struct mg_connection * conn)
+{
+	int ret = 1;  /* defaults to success */
+	const struct mg_pollfd * pfd = conn->custom_mg_poll_fds_array;
+	const struct mg_misc_socket_callback * cb = conn->misc_socket_callbacks;
+	if ((pfd)&&(cb)) {
+		pfd += 2;  /* the first two pfds are always handled internally, so we skip them here */
+
+		for (int i=0; i<conn->num_misc_socket_callbacks; i++) {
+			if (pfd[i].revents != 0) {
+				if (pfd[i].fd == cb[i].sock_fd) {  /* abject paranoia -- these should always be the same */
+					ret &= cb[i].handler_callback(conn, pfd[i].fd, pfd[i].revents);
+				} else {
+					mg_cry_internal(conn, "%s:  sock_fd mismatch!  %i/%i", __func__, pfd[i].fd, cb[i].sock_fd);  /* should never happen! */
+				}
+			}
+		}
+	}
+	return ret;
+}
 
 /* Read from IO channel - opened file descriptor, socket, or SSL descriptor.
  * Return value:
@@ -6269,6 +6347,7 @@ pull_inner(FILE *fp,
 		struct mg_pollfd pfd[2];
 		int to_read;
 		int pollres;
+		int client_is_ready_for_read = 0;
 
 		to_read = mbedtls_ssl_get_bytes_avail(conn->ssl);
 
@@ -6281,25 +6360,27 @@ pull_inner(FILE *fp,
 			if (to_read > len)
 				to_read = len;
 		} else {
-			pfd[0].fd = conn->client.sock;
-			pfd[0].events = POLLIN;
-
-			pfd[1].fd = conn->phys_ctx->thread_shutdown_notification_socket;
-			pfd[1].events = POLLIN;
+			int num_pfds;
+			struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds);
 
 			to_read = len;
 
-			pollres = mg_poll(pfd,
-			                  2,
+			pollres = pfds ? mg_poll(pfd,
+			                  num_pfds,
 			                  (int)(timeout * 1000.0),
-			                  &(conn->phys_ctx->stop_flag));
-
+			                  &(conn->phys_ctx->stop_flag)) : -1;
 			if (!STOP_FLAG_IS_ZERO(&conn->phys_ctx->stop_flag)) {
 				return -2;
 			}
+			if (pollres > 0) {
+				if (mg_dispatch_misc_socket_callbacks(conn) == 0) {
+					return -2;
+				}
+				client_is_ready_for_read = ((pfd[0].revents & POLLIN) != 0);
+			}
 		}
 
-		if (pollres > 0) {
+		if (client_is_ready_for_read) {
 			nread = mbed_ssl_read(conn->ssl, (unsigned char *)buf, to_read);
 			if (nread <= 0) {
 				if ((nread == MBEDTLS_ERR_SSL_WANT_READ)
@@ -6313,7 +6394,6 @@ pull_inner(FILE *fp,
 			} else {
 				err = 0;
 			}
-
 		} else if (pollres < 0) {
 			/* Error */
 			return -2;
@@ -6325,8 +6405,8 @@ pull_inner(FILE *fp,
 #elif !defined(NO_SSL)
 	} else if (conn->ssl != NULL) {
 		int ssl_pending;
-		struct mg_pollfd pfd[2];
 		int pollres;
+		int client_is_ready_for_read = 0;
 
 		if ((ssl_pending = SSL_pending(conn->ssl)) > 0) {
 			/* We already know there is no more data buffered in conn->buf
@@ -6337,20 +6417,24 @@ pull_inner(FILE *fp,
 			}
 			pollres = 1;
 		} else {
-			pfd[0].fd = conn->client.sock;
-			pfd[0].events = POLLIN;
-			pfd[1].fd = conn->phys_ctx->thread_shutdown_notification_socket;
-			pfd[1].events = POLLIN;
-
-			pollres = mg_poll(pfd,
-			                  2,
+			int num_pfds;
+			struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds);
+			pollres = pfd ? mg_poll(pfd,
+			                  num_pfds,
 			                  (int)(timeout * 1000.0),
-			                  &(conn->phys_ctx->stop_flag));
+			                  &(conn->phys_ctx->stop_flag)) : -1;
+			if (pollres > 0) {
+				if (mg_dispatch_misc_socket_callbacks(conn) == 0) {
+					return -2;
+				}
+				client_is_ready_for_read = ((pfd[0].revents & POLLIN) != 0);
+			}
+
 			if (!STOP_FLAG_IS_ZERO(&conn->phys_ctx->stop_flag)) {
 				return -2;
 			}
 		}
-		if (pollres > 0) {
+		if (client_is_ready_for_read) {
 			ERR_clear_error();
 			nread =
 			    SSL_read(conn->ssl, buf, (ssl_pending > 0) ? ssl_pending : len);
@@ -6381,28 +6465,31 @@ pull_inner(FILE *fp,
 #endif
 
 	} else {
-		struct mg_pollfd pfd[2];
 		int pollres;
 
-		pfd[0].fd = conn->client.sock;
-		pfd[0].events = POLLIN;
-
-		pfd[1].fd = conn->phys_ctx->thread_shutdown_notification_socket;
-		pfd[1].events = POLLIN;
-
-		pollres = mg_poll(pfd,
-		                  2,
+		int num_pfds;
+		struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds);
+		pollres = pfd ? mg_poll(pfd,
+		                  num_pfds,
 		                  (int)(timeout * 1000.0),
-		                  &(conn->phys_ctx->stop_flag));
+		                  &(conn->phys_ctx->stop_flag)) : -1;
 		if (!STOP_FLAG_IS_ZERO(&conn->phys_ctx->stop_flag)) {
 			return -2;
 		}
 		if (pollres > 0) {
-			nread = (int)recv(conn->client.sock, buf, (len_t)len, 0);
-			err = (nread < 0) ? ERRNO : 0;
-			if (nread <= 0) {
-				/* shutdown of the socket at client side */
+			if (mg_dispatch_misc_socket_callbacks(conn) == 0) {
 				return -2;
+			}
+			if ((pfd[0].revents & POLLIN) != 0) {
+				nread = (int)recv(conn->client.sock, buf, (len_t)len, 0);
+				err = (nread < 0) ? ERRNO : 0;
+				if (nread <= 0) {
+					/* shutdown of the socket at client side */
+					return -2;
+				}
+			} else {
+				/* some other socket was ready, but not the client socket */
+				nread = 0;
 			}
 		} else if (pollres < 0) {
 			/* error calling poll */
@@ -16593,22 +16680,33 @@ sslize(struct mg_connection *conn,
 					/* Need to retry the function call "later".
 					 * See https://linux.die.net/man/3/ssl_get_error
 					 * This is typical for non-blocking sockets. */
-					struct mg_pollfd pfd[2];
 					int pollres;
-					pfd[0].fd = conn->client.sock;
+
+					int num_pfds;
+					struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds);
+					if (pfd == NULL) {
+						mg_cry_internal(conn, "%s: SSL mg_get_poll_fds_for_connection() failed", __func__);
+						break;
+					}
+
+					/* At this point mg_get_poll_fds_for_connection() has already set the pfds
+					 * for us as expected, except that pfd[0].events is always set to POLLIN.
+					 * So we need to set it properly here. */
 					pfd[0].events = ((err == SSL_ERROR_WANT_CONNECT)
 					                || (err == SSL_ERROR_WANT_WRITE))
 					                   ? POLLOUT
 					                   : POLLIN;
 
-					pfd[1].fd = conn->phys_ctx->thread_shutdown_notification_socket;
-					pfd[1].events = POLLIN;
 					pollres =
-					    mg_poll(pfd, 2, 50, &(conn->phys_ctx->stop_flag));
+					    mg_poll(pfd, num_pfds, 50, &(conn->phys_ctx->stop_flag));
 					if (pollres < 0) {
 						/* Break if error occurred (-1)
 						 * or server shutdown (-2) */
 						break;
+					} else if (pollres > 0) {
+						if (mg_dispatch_misc_socket_callbacks(conn) == 0) {
+							break;  /* error out (and then free(conn->ssl) below) */
+						}
 					}
 				}
 
@@ -17920,6 +18018,19 @@ close_socket_gracefully(struct mg_connection *conn)
 }
 #endif
 
+static void
+mg_clear_misc_socket_callbacks(struct mg_connection *conn)
+{
+	if (conn->misc_socket_callbacks) {
+		mg_free(conn->misc_socket_callbacks);
+	}
+	conn->num_misc_socket_callbacks = 0;
+
+	if (conn->custom_mg_poll_fds_array) {
+		mg_free(conn->custom_mg_poll_fds_array);
+	}
+	conn->custom_mg_poll_fds_array_size = 0;
+}
 
 static void
 close_connection(struct mg_connection *conn)
@@ -17950,6 +18061,7 @@ close_connection(struct mg_connection *conn)
 	/* Reset user data, after close callback is called.
 	 * Do not reuse it. If the user needs a destructor,
 	 * it must be done in the connection_close callback. */
+	mg_clear_misc_socket_callbacks(conn);
 	mg_set_user_connection_data(conn, NULL);
 
 #if defined(USE_SERVER_STATS)
@@ -19403,6 +19515,7 @@ init_connection(struct mg_connection *conn)
 	conn->handled_requests = 0;
 	conn->connection_type = CONNECTION_TYPE_INVALID;
 	conn->request_info.acceptedWebSocketSubprotocol = NULL;
+	mg_clear_misc_socket_callbacks(conn);
 	mg_set_user_connection_data(conn, NULL);
 
 #if defined(USE_SERVER_STATS)
@@ -22192,6 +22305,75 @@ mg_disable_connection_keep_alive(struct mg_connection *conn)
 	if (conn != NULL) {
 		conn->must_close = 1;
 	}
+}
+
+
+CIVETWEB_API int
+mg_set_misc_socket_handler(const struct mg_connection *cconn,
+			   int sock_fd,
+			   mg_misc_socket_data_handler handler_callback,
+			   mg_misc_socket_flags_provider event_flags_query_callback)
+{
+	struct mg_connection * conn = (struct mg_connection *) cconn;
+	if ((conn == NULL)||(sock_fd < 0)) {
+		return -1;  /* invalid parameter */
+	}
+
+	/** Find the location of any existing record (if any) for the specified sock_fd */
+	struct mg_misc_socket_callback * cbs = conn->misc_socket_callbacks;
+	int num_cbs = conn->num_misc_socket_callbacks;
+	int cur_cb_index = -1;
+	if (cbs) {
+		for (int i=0; i<num_cbs; i++) {
+			if (cbs[i].sock_fd == sock_fd) {
+				cur_cb_index = i;
+				break;
+			}
+		}
+	}
+
+	if (handler_callback) {
+		if (cur_cb_index < 0) {
+			/* Unknown socket - append a new item to our callback-records array */
+			struct mg_misc_socket_callback * new_cbs =
+				(struct mg_misc_socket_callback *)mg_realloc_ctx(cbs,
+					(num_cbs+1)*(sizeof(cbs[0])), conn->phys_ctx);
+			if (new_cbs == NULL) {
+				return -2;  /* out of memory */
+			}
+			cur_cb_index = num_cbs;
+
+			conn->misc_socket_callbacks = new_cbs;
+			conn->num_misc_socket_callbacks++;
+		}
+
+		struct mg_misc_socket_callback * new_cb = &conn->misc_socket_callbacks[cur_cb_index];
+		new_cb->sock_fd = sock_fd;
+		new_cb->handler_callback = handler_callback;
+		new_cb->event_flags_query_callback = event_flags_query_callback;
+	}
+	else if (cur_cb_index >= 0) {
+		/* Remove a previously-installed callback-record */
+		if (num_cbs == 1) {
+			mg_free(cbs);
+			conn->misc_socket_callbacks = NULL;
+		} else {
+			for (int i=cur_cb_index; (i+1)<num_cbs; i++) {
+				cbs[i] = cbs[i+1];
+			}
+
+			struct mg_misc_socket_callback * new_cbs =
+				(struct mg_misc_socket_callback *)mg_realloc_ctx(cbs,
+					(num_cbs-1)*(sizeof(cbs[0])), conn->phys_ctx);
+			if (new_cbs == NULL) {
+				return -2;  /* out of memory */
+			}
+			conn->misc_socket_callbacks = new_cbs;
+		}
+		conn->num_misc_socket_callbacks--;
+	}
+
+	return 0;  /* success */
 }
 
 
