@@ -18024,11 +18024,13 @@ mg_clear_misc_socket_callbacks(struct mg_connection *conn)
 	if (conn->misc_socket_callbacks) {
 		mg_free(conn->misc_socket_callbacks);
 	}
+	conn->misc_socket_callbacks     = NULL;
 	conn->num_misc_socket_callbacks = 0;
 
 	if (conn->custom_mg_poll_fds_array) {
 		mg_free(conn->custom_mg_poll_fds_array);
 	}
+	conn->custom_mg_poll_fds_array      = NULL;
 	conn->custom_mg_poll_fds_array_size = 0;
 }
 
