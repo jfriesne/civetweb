@@ -643,6 +643,12 @@ CIVETWEB_API void *mg_get_user_context_data(const struct mg_connection *conn);
 /* Get user defined thread pointer for server threads (see init_thread). */
 CIVETWEB_API void *mg_get_thread_pointer(const struct mg_connection *conn);
 
+/* Returns a socket-descriptor that will become ready-for-read when mg_stop() is
+ * called on the given context.  No data should be read from or written to this socket;
+ * it is provided for event-notification purposes (e.g. via poll() or select() or similar)
+ * only.  The intended use is to allow user-implemented event-loops within callbacks to
+ * exit immediately when their hosting server-context is going away. */
+CIVETWEB_API int mg_get_context_shutdown_notification_socket(const struct mg_context *ctx);
 
 /* Set user data for the current connection. */
 /* Note: CivetWeb callbacks use "struct mg_connection *conn" as input
@@ -1618,7 +1624,9 @@ CIVETWEB_API int mg_response_header_send(struct mg_connection *conn);
    mg_misc_socket_flags_provider
        Is called just before CivetWeb calls poll() on the user-provided socket.
        Its return-value will be used to populate the "events" field associated
-       with the user-provided socket.
+       with the user-provided socket.  If this callback-pointer is set to NULL,
+       then POLLIN will be assumed by default.
+
        Parameters:
          conn: The associated mg_connection object
          sock_fd: The file descriptor of the user-provided socket this callback is about.
@@ -1632,7 +1640,9 @@ CIVETWEB_API int mg_response_header_send(struct mg_connection *conn);
          [etc]
 
    mg_misc_socket_data_handler
-       Is called when CivetWeb has detected that a connection is ready for data exchange.
+       Is called when CivetWeb has detected that a user-provided socket descriptor
+       is ready for data exchange.  This callback should be implemented to perform
+       any I/O operations on the socket descriptor as necessary.
 
        Parameters:
          conn: The associated mg_connection object
@@ -1640,8 +1650,8 @@ CIVETWEB_API int mg_response_header_send(struct mg_connection *conn);
          int ready_events_bit_chord:  the detected I/O conditions (e.g. POLLIN, POLLOUT,
                                       or POLLIN|POLLOUT)
        Return value:
-         1: keep this client connection open.
-         0: close the client connection.  (Note this closes mg_connection, *not* sock_fd!)
+         1: keep the client connection open.
+         0: close the client connection.  (Note this closes the mg_connection, *not* sock_fd!)
 */
 typedef int (*mg_misc_socket_flags_provider)(const struct mg_connection * conn,
                                              int sock_fd);

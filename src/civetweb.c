@@ -3256,6 +3256,13 @@ mg_get_thread_pointer(const struct mg_connection *conn)
 }
 
 
+CIVETWEB_API int
+mg_get_context_shutdown_notification_socket(const struct mg_context *ctx)
+{
+	return ctx->thread_shutdown_notification_socket;
+}
+
+
 CIVETWEB_API void
 mg_set_user_connection_data(const struct mg_connection *const_conn, void *data)
 {
