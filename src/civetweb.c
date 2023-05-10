@@ -2503,12 +2503,15 @@ struct mg_http2_connection {
 };
 #endif
 
+
+#if defined(MG_EXPERIMENTAL_INTERFACES)
 /** Record of callback-settings that were set via mg_set_misc_socket_callback() */
 struct mg_misc_socket_callback {
 	int sock_fd;  /* Note:  owned by user-code; we won't close this! */
 	mg_misc_socket_flags_provider event_flags_query_callback;
 	mg_misc_socket_data_handler handler_callback;
 };
+#endif
 
 struct mg_connection {
 	int connection_type; /* see CONNECTION_TYPE_* above */
@@ -2596,12 +2599,15 @@ struct mg_connection {
 	void *lua_websocket_state; /* Lua_State for a websocket connection */
 #endif
 
+	struct mg_pollfd basic_mg_poll_fds_array[2];  /* these get used in the common (no-user-socket-callbacks) case */
+
+#if defined(MG_EXPERIMENTAL_INTERFACES)
 	struct mg_misc_socket_callback * misc_socket_callbacks;  /* NULL if none are installed */
 	int num_misc_socket_callbacks; /* how many items misc_socket_callbacks points to */
 
-	struct mg_pollfd basic_mg_poll_fds_array[2];  /* these get used in the common (no-user-socket-callbacks) case */
 	struct mg_pollfd * custom_mg_poll_fds_array;  /* dynamically allocated array (for custom-user-callbacks cases) */
 	int custom_mg_poll_fds_array_size;            /* number of items currently allocated in custom_mg_poll_fds_array (either 0 or 3+) */
+#endif
 
 	void *tls_user_ptr; /* User defined pointer in thread local storage,
 	                     * for quick access */
@@ -3256,11 +3262,13 @@ mg_get_thread_pointer(const struct mg_connection *conn)
 }
 
 
+#if defined(MG_EXPERIMENTAL_INTERFACES)
 CIVETWEB_API int
 mg_get_context_shutdown_notification_socket(const struct mg_context *ctx)
 {
 	return ctx->thread_shutdown_notification_socket;
 }
+#endif
 
 
 CIVETWEB_API void
@@ -6255,6 +6263,7 @@ mg_get_poll_fds_for_connection(struct mg_connection * conn,
 {
 	struct mg_pollfd * ret = conn->basic_mg_poll_fds_array;
 	int num_pfds = 2;  /* We always have at least client.sock and thread_shutdown_notification_socket */
+#if defined(MG_EXPERIMENTAL_INTERFACES)
 	if (conn->num_misc_socket_callbacks > 0) {
 		num_pfds += conn->num_misc_socket_callbacks;
 		if (num_pfds != conn->custom_mg_poll_fds_array_size) {
@@ -6277,6 +6286,7 @@ mg_get_poll_fds_for_connection(struct mg_connection * conn,
 			pfd->events = cb->event_flags_query_callback ? cb->event_flags_query_callback(conn, cb->sock_fd) : POLLIN;
 		}
 	}
+#endif
 
 	ret[0].fd = conn->client.sock;
 	ret[0].events = POLLIN;
@@ -6291,6 +6301,7 @@ mg_get_poll_fds_for_connection(struct mg_connection * conn,
 static int
 mg_dispatch_misc_socket_callbacks(struct mg_connection * conn)
 {
+#if defined(MG_EXPERIMENTAL_INTERFACES)
 	int ret = 1;  /* defaults to success */
 	const struct mg_pollfd * pfd = conn->custom_mg_poll_fds_array;
 	const struct mg_misc_socket_callback * cb = conn->misc_socket_callbacks;
@@ -6308,6 +6319,10 @@ mg_dispatch_misc_socket_callbacks(struct mg_connection * conn)
 		}
 	}
 	return ret;
+#else
+	(void) conn;  /* avoid compiler warning */
+	return 1;
+#endif
 }
 
 /* Read from IO channel - opened file descriptor, socket, or SSL descriptor.
@@ -18028,6 +18043,7 @@ close_socket_gracefully(struct mg_connection *conn)
 static void
 mg_clear_misc_socket_callbacks(struct mg_connection *conn)
 {
+#if defined(MG_EXPERIMENTAL_INTERFACES)
 	if (conn->misc_socket_callbacks) {
 		mg_free(conn->misc_socket_callbacks);
 	}
@@ -18039,6 +18055,9 @@ mg_clear_misc_socket_callbacks(struct mg_connection *conn)
 	}
 	conn->custom_mg_poll_fds_array      = NULL;
 	conn->custom_mg_poll_fds_array_size = 0;
+#else
+	(void) conn;  /* avoid compiler warning */
+#endif
 }
 
 static void
@@ -22317,6 +22336,7 @@ mg_disable_connection_keep_alive(struct mg_connection *conn)
 }
 
 
+#if defined(MG_EXPERIMENTAL_INTERFACES)
 CIVETWEB_API int
 mg_set_misc_socket_handler(const struct mg_connection *cconn,
 			   int sock_fd,
@@ -22384,6 +22404,7 @@ mg_set_misc_socket_handler(const struct mg_connection *cconn,
 
 	return 0;  /* success */
 }
+#endif
 
 
 #if defined(MG_EXPERIMENTAL_INTERFACES)
