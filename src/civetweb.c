@@ -6258,7 +6258,8 @@ push_all(struct mg_context *ctx,
   */
 static struct mg_pollfd *
 mg_get_poll_fds_for_connection(struct mg_connection * conn,
-                               int * ret_num_pfds)
+                               int * ret_num_pfds,
+                               int connection_fd_events_bits)
 {
 	struct mg_pollfd * ret = conn->basic_mg_poll_fds_array;
 	int num_pfds = 2;  /* We always have at least client.sock and thread_shutdown_notification_socket */
@@ -6288,7 +6289,7 @@ mg_get_poll_fds_for_connection(struct mg_connection * conn,
 #endif
 
 	ret[0].fd = conn->client.sock;
-	ret[0].events = POLLIN;
+	ret[0].events = connection_fd_events_bits;
 
 	ret[1].fd = conn->phys_ctx->thread_shutdown_notification_socket;
 	ret[1].events = POLLIN;
@@ -6378,7 +6379,7 @@ pull_inner(FILE *fp,
 				to_read = len;
 		} else {
 			int num_pfds;
-			struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds);
+			struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds, POLLIN);
 
 			to_read = len;
 
@@ -6436,7 +6437,7 @@ pull_inner(FILE *fp,
 			pollres = 1;
 		} else {
 			int num_pfds;
-			struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds);
+			struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds, POLLIN);
 			pollres = pfd ? mg_poll(pfd,
 			                  num_pfds,
 			                  (int)(timeout * 1000.0),
@@ -6487,7 +6488,7 @@ pull_inner(FILE *fp,
 		int pollres;
 
 		int num_pfds;
-		struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds);
+		struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds, POLLIN);
 		pollres = pfd ? mg_poll(pfd,
 		                  num_pfds,
 		                  (int)(timeout * 1000.0),
@@ -16702,20 +16703,18 @@ sslize(struct mg_connection *conn,
 					 * This is typical for non-blocking sockets. */
 					int pollres;
 
+					int primary_fd_events = ((err == SSL_ERROR_WANT_CONNECT)
+					                || (err == SSL_ERROR_WANT_WRITE))
+					                   ? POLLOUT
+					                   : POLLIN;
 					int num_pfds;
-					struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds);
+					struct mg_pollfd * pfd =
+					     mg_get_poll_fds_for_connection(conn, &num_pfds, primary_fd_events);
+
 					if (pfd == NULL) {
 						mg_cry_internal(conn, "%s: SSL mg_get_poll_fds_for_connection() failed", __func__);
 						break;
 					}
-
-					/* At this point mg_get_poll_fds_for_connection() has already set the pfds
-					 * for us as expected, except that pfd[0].events is always set to POLLIN.
-					 * So we need to set it properly here. */
-					pfd[0].events = ((err == SSL_ERROR_WANT_CONNECT)
-					                || (err == SSL_ERROR_WANT_WRITE))
-					                   ? POLLOUT
-					                   : POLLIN;
 
 					pollres =
 					    mg_poll(pfd, num_pfds, 50, &(conn->phys_ctx->stop_flag), 1);
