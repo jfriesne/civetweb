@@ -6309,11 +6309,7 @@ mg_dispatch_misc_socket_callbacks(struct mg_connection * conn)
 
 		for (int i=0; i<conn->num_misc_socket_callbacks; i++) {
 			if (pfd[i].revents != 0) {
-				if (pfd[i].fd == cb[i].sock_fd) {  /* abject paranoia -- these should always be the same */
-					ret &= cb[i].handler_callback(conn, pfd[i].fd, pfd[i].revents);
-				} else {
-					mg_cry_internal(conn, "%s:  sock_fd mismatch!  %i/%i", __func__, pfd[i].fd, cb[i].sock_fd);  /* should never happen! */
-				}
+				ret &= cb[i].handler_callback(conn, pfd[i].fd, pfd[i].revents);
 			}
 		}
 	}
