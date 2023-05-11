@@ -5253,14 +5253,19 @@ mg_readdir(DIR *dir)
 
 
 #if !defined(HAVE_POLL)
-#undef POLLIN
-#undef POLLPRI
-#undef POLLOUT
-#undef POLLERR
-#define POLLIN (1)  /* Data ready - read will not block. */
-#define POLLPRI (2) /* Priority data ready. */
-#define POLLOUT (4) /* Send queue not full - write will not block. */
-#define POLLERR (8) /* Error event */
+
+/* Only define these constants if they aren't already defined by the system; otherwise
+ * we risk a mismatch between their values we test for in this file and the event-flags
+ * returned by the user-code's event_flags_query_callbacks.
+ *
+ * In particular, Windows specifies "interesting" values for these constants that are
+ * different from the ones defined below. */
+#if !defined(POLLIN) && !defined(POLLPRI) && !defined(POLLOUT) && !defined(POLLERR)
+# define POLLIN (1)  /* Data ready - read will not block. */
+# define POLLPRI (2) /* Priority data ready. */
+# define POLLOUT (4) /* Send queue not full - write will not block. */
+# define POLLERR (8) /* Error event */
+#endif
 
 FUNCTION_MAY_BE_UNUSED
 static int
