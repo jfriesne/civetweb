@@ -2519,14 +2519,12 @@ struct mg_http2_connection {
 #endif
 
 
-#if defined(MG_EXPERIMENTAL_INTERFACES)
 /** Record of callback-settings that were set via mg_set_misc_socket_callback() */
 struct mg_misc_socket_callback {
 	int sock_fd;  /* Note:  owned by user-code; we won't close this! */
 	mg_misc_socket_flags_provider event_flags_query_callback;
 	mg_misc_socket_data_handler handler_callback;
 };
-#endif
 
 struct mg_connection {
 	int connection_type; /* see CONNECTION_TYPE_* above */
@@ -2616,13 +2614,11 @@ struct mg_connection {
 
 	struct mg_pollfd basic_mg_poll_fds_array[2];  /* these get used in the common (no-user-socket-callbacks) case */
 
-#if defined(MG_EXPERIMENTAL_INTERFACES)
 	struct mg_misc_socket_callback * misc_socket_callbacks;  /* NULL if none are installed */
-	int num_misc_socket_callbacks; /* how many items misc_socket_callbacks points to */
+	unsigned int num_misc_socket_callbacks; /* how many items misc_socket_callbacks points to */
 
 	struct mg_pollfd * custom_mg_poll_fds_array;  /* dynamically allocated array (for custom-user-callbacks cases) */
-	int custom_mg_poll_fds_array_size;            /* number of items currently allocated in custom_mg_poll_fds_array (either 0 or 3+) */
-#endif
+	unsigned int custom_mg_poll_fds_array_size;   /* number of items currently allocated in custom_mg_poll_fds_array (either 0 or 3+) */
 
 	void *tls_user_ptr; /* User defined pointer in thread local storage,
 	                     * for quick access */
@@ -3277,13 +3273,11 @@ mg_get_thread_pointer(const struct mg_connection *conn)
 }
 
 
-#if defined(MG_EXPERIMENTAL_INTERFACES)
 CIVETWEB_API int
 mg_get_context_shutdown_notification_socket(const struct mg_context *ctx)
 {
 	return ctx->thread_shutdown_notification_socket;
 }
-#endif
 
 
 CIVETWEB_API void
@@ -6317,12 +6311,11 @@ push_all(struct mg_context *ctx,
   */
 static struct mg_pollfd *
 mg_get_poll_fds_for_connection(struct mg_connection * conn,
-                               int * ret_num_pfds,
-                               int connection_fd_events_bits)
+                               unsigned int * ret_num_pfds,
+                               short connection_fd_events_bits)
 {
 	struct mg_pollfd * ret = conn->basic_mg_poll_fds_array;
-	int num_pfds = 2;  /* We always have at least client.sock and thread_shutdown_notification_socket */
-#if defined(MG_EXPERIMENTAL_INTERFACES)
+	unsigned int num_pfds = 2;  /* We always have at least client.sock and thread_shutdown_notification_socket */
 	if (conn->num_misc_socket_callbacks > 0) {
 		num_pfds += conn->num_misc_socket_callbacks;
 		if (num_pfds != conn->custom_mg_poll_fds_array_size) {
@@ -6338,14 +6331,13 @@ mg_get_poll_fds_for_connection(struct mg_connection * conn,
 		}
 
 		ret = conn->custom_mg_poll_fds_array;
-		for (int i=0; i<conn->num_misc_socket_callbacks; i++) {
+		for (unsigned int i=0; i<conn->num_misc_socket_callbacks; i++) {
 			const struct mg_misc_socket_callback * cb = &conn->misc_socket_callbacks[i];
 			struct mg_pollfd * pfd = &ret[i+2];  /* the first two pfds are internal and will be set up separately at the end of this function */
 			pfd->fd = cb->sock_fd;
 			pfd->events = cb->event_flags_query_callback ? cb->event_flags_query_callback(conn, cb->sock_fd) : POLLIN;
 		}
 	}
-#endif
 
 	ret[0].fd = conn->client.sock;
 	ret[0].events = connection_fd_events_bits;
@@ -6360,24 +6352,19 @@ mg_get_poll_fds_for_connection(struct mg_connection * conn,
 static int
 mg_dispatch_misc_socket_callbacks(struct mg_connection * conn)
 {
-#if defined(MG_EXPERIMENTAL_INTERFACES)
 	int ret = 1;  /* defaults to success */
 	const struct mg_pollfd * pfd = conn->custom_mg_poll_fds_array;
 	const struct mg_misc_socket_callback * cb = conn->misc_socket_callbacks;
 	if ((pfd)&&(cb)) {
 		pfd += 2;  /* the first two pfds are always handled internally, so we skip them here */
 
-		for (int i=0; i<conn->num_misc_socket_callbacks; i++) {
+		for (unsigned int i=0; i<conn->num_misc_socket_callbacks; i++) {
 			if (pfd[i].revents != 0) {
 				ret &= cb[i].handler_callback(conn, pfd[i].fd, pfd[i].revents);
 			}
 		}
 	}
 	return ret;
-#else
-	(void) conn;  /* avoid compiler warning */
-	return 1;
-#endif
 }
 
 /* Read from IO channel - opened file descriptor, socket, or SSL descriptor.
@@ -6437,7 +6424,7 @@ pull_inner(FILE *fp,
 			if (to_read > len)
 				to_read = len;
 		} else {
-			int num_pfds;
+			unsigned int num_pfds;
 			struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds, POLLIN);
 
 			to_read = len;
@@ -6495,7 +6482,7 @@ pull_inner(FILE *fp,
 			}
 			pollres = 1;
 		} else {
-			int num_pfds;
+			unsigned int num_pfds;
 			struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds, POLLIN);
 			pollres = pfd ? mg_poll(pfd,
 			                  num_pfds,
@@ -6546,7 +6533,7 @@ pull_inner(FILE *fp,
 	} else {
 		int pollres;
 
-		int num_pfds;
+		unsigned int num_pfds;
 		struct mg_pollfd * pfd = mg_get_poll_fds_for_connection(conn, &num_pfds, POLLIN);
 		pollres = pfd ? mg_poll(pfd,
 		                  num_pfds,
@@ -16842,11 +16829,11 @@ sslize(struct mg_connection *conn,
 					 * This is typical for non-blocking sockets. */
 
 					int pollres;
-					int primary_fd_events = ((err == SSL_ERROR_WANT_CONNECT)
+					short primary_fd_events = ((err == SSL_ERROR_WANT_CONNECT)
 					                || (err == SSL_ERROR_WANT_WRITE))
 					                   ? POLLOUT
 					                   : POLLIN;
-					int num_pfds;
+					unsigned int num_pfds;
 					struct mg_pollfd * pfd =
 					     mg_get_poll_fds_for_connection(conn, &num_pfds, primary_fd_events);
 
@@ -18180,7 +18167,6 @@ close_socket_gracefully(struct mg_connection *conn)
 static void
 mg_clear_misc_socket_callbacks(struct mg_connection *conn)
 {
-#if defined(MG_EXPERIMENTAL_INTERFACES)
 	if (conn->misc_socket_callbacks) {
 		mg_free(conn->misc_socket_callbacks);
 	}
@@ -18192,9 +18178,6 @@ mg_clear_misc_socket_callbacks(struct mg_connection *conn)
 	}
 	conn->custom_mg_poll_fds_array      = NULL;
 	conn->custom_mg_poll_fds_array_size = 0;
-#else
-	(void) conn;  /* avoid compiler warning */
-#endif
 }
 
 static void
@@ -22535,7 +22518,6 @@ mg_disable_connection_keep_alive(struct mg_connection *conn)
 }
 
 
-#if defined(MG_EXPERIMENTAL_INTERFACES)
 CIVETWEB_API int
 mg_set_misc_socket_handler(const struct mg_connection *cconn,
 			   int sock_fd,
@@ -22549,12 +22531,12 @@ mg_set_misc_socket_handler(const struct mg_connection *cconn,
 
 	/** Find the location of any existing record (if any) for the specified sock_fd */
 	struct mg_misc_socket_callback * cbs = conn->misc_socket_callbacks;
-	int num_cbs = conn->num_misc_socket_callbacks;
+	unsigned int num_cbs = conn->num_misc_socket_callbacks;
 	int cur_cb_index = -1;
 	if (cbs) {
-		for (int i=0; i<num_cbs; i++) {
+		for (unsigned int i=0; i<num_cbs; i++) {
 			if (cbs[i].sock_fd == sock_fd) {
-				cur_cb_index = i;
+				cur_cb_index = (int) i;
 				break;
 			}
 		}
@@ -22569,7 +22551,7 @@ mg_set_misc_socket_handler(const struct mg_connection *cconn,
 			if (new_cbs == NULL) {
 				return -2;  /* out of memory */
 			}
-			cur_cb_index = num_cbs;
+			cur_cb_index = (int) num_cbs;
 
 			conn->misc_socket_callbacks = new_cbs;
 			conn->num_misc_socket_callbacks++;
@@ -22586,7 +22568,7 @@ mg_set_misc_socket_handler(const struct mg_connection *cconn,
 			mg_free(cbs);
 			conn->misc_socket_callbacks = NULL;
 		} else {
-			for (int i=cur_cb_index; (i+1)<num_cbs; i++) {
+			for (unsigned int i=(unsigned int)cur_cb_index; (i+1)<num_cbs; i++) {
 				cbs[i] = cbs[i+1];
 			}
 
@@ -22603,7 +22585,6 @@ mg_set_misc_socket_handler(const struct mg_connection *cconn,
 
 	return 0;  /* success */
 }
-#endif
 
 
 #if defined(MG_EXPERIMENTAL_INTERFACES)

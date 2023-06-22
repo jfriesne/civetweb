@@ -643,14 +643,12 @@ CIVETWEB_API void *mg_get_user_context_data(const struct mg_connection *conn);
 /* Get user defined thread pointer for server threads (see init_thread). */
 CIVETWEB_API void *mg_get_thread_pointer(const struct mg_connection *conn);
 
-#if defined(MG_EXPERIMENTAL_INTERFACES)
 /* Returns a socket-descriptor that will become ready-for-read when mg_stop() is
  * called on the given context.  No data should be read from or written to this socket;
  * it is provided for event-notification purposes (e.g. via poll() or select() or similar)
  * only.  The intended use is to allow user-implemented event-loops within callbacks to
  * exit immediately when their hosting server-context is going away. */
 CIVETWEB_API int mg_get_context_shutdown_notification_socket(const struct mg_context *ctx);
-#endif
 
 /* Set user data for the current connection. */
 /* Note: CivetWeb callbacks use "struct mg_connection *conn" as input
@@ -1621,7 +1619,6 @@ CIVETWEB_API int mg_response_header_add_lines(struct mg_connection *conn,
 CIVETWEB_API int mg_response_header_send(struct mg_connection *conn);
 
 
-#if defined(MG_EXPERIMENTAL_INTERFACES)
 /* Callback types for miscellaneous-socket-event handlers in C/C++.
 
    mg_misc_socket_flags_provider
@@ -1656,7 +1653,7 @@ CIVETWEB_API int mg_response_header_send(struct mg_connection *conn);
          1: keep the client connection open.
          0: close the client connection.  (Note this closes the mg_connection, *not* sock_fd!)
 */
-typedef int (*mg_misc_socket_flags_provider)(const struct mg_connection * conn,
+typedef short (*mg_misc_socket_flags_provider)(const struct mg_connection * conn,
                                              int sock_fd);
 typedef int (*mg_misc_socket_data_handler)(struct mg_connection * conn,
                                            int sock_fd,
@@ -1693,7 +1690,6 @@ CIVETWEB_API int mg_set_misc_socket_handler(const struct mg_connection *conn,
                                             int sock_fd,
                                             mg_misc_socket_data_handler handler_callback,
                                             mg_misc_socket_flags_provider event_flags_query_callback);
-#endif
 
 
 /* Check which features where set when the civetweb library has been compiled.
