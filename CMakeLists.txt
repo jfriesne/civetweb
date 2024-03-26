@@ -88,6 +88,11 @@ message(STATUS "IP Version 6 - ${CIVETWEB_ENABLE_IPV6}")
 option(CIVETWEB_ENABLE_WEBSOCKETS "Enable websockets connections" OFF)
 message(STATUS "Websockets support - ${CIVETWEB_ENABLE_WEBSOCKETS}")
 
+# X DOM sockets support
+option(CIVETWEB_ENABLE_X_DOM_SOCKET "Enable X DOM sockets support" OFF)
+message(STATUS "X DOM sockets support - ${CIVETWEB_ENABLE_X_DOM_SOCKET}")
+
+
 # Server statistics support
 option(CIVETWEB_ENABLE_SERVER_STATS "Enable server statistics" OFF)
 message(STATUS "Server statistics support - ${CIVETWEB_ENABLE_SERVER_STATS}")
@@ -227,9 +232,12 @@ message(STATUS "Compile for OpenSSL 1.0 API - ${CIVETWEB_SSL_OPENSSL_API_1_0}")
 option(CIVETWEB_SSL_OPENSSL_API_1_1 "Use the OpenSSL 1.1 API" ON)
 message(STATUS "Compile for OpenSSL 1.1 API - ${CIVETWEB_SSL_OPENSSL_API_1_1}")
 
-# OpenSSL 1.1 API
+# OpenSSL 3.0 API
 option(CIVETWEB_SSL_OPENSSL_API_3_0 "Use the OpenSSL 3.0 API" OFF)
 message(STATUS "Compile for OpenSSL 3.0 API - ${CIVETWEB_SSL_OPENSSL_API_3_0}")
+
+option(CIVETWEB_ENABLE_MBEDTLS "Use the MbedTls" OFF)
+message(STATUS "SSL support - ${CIVETWEB_ENABLE_MBEDTLS}")
 
 # Dynamically load or link the SSL libraries
 cmake_dependent_option(
@@ -494,6 +502,9 @@ endif()
 if (CIVETWEB_ENABLE_WEBSOCKETS)
   add_definitions(-DUSE_WEBSOCKET)
 endif()
+if (CIVETWEB_ENABLE_X_DOM_SOCKET)
+   add_definitions(-DUSE_X_DOM_SOCKET)
+endif()
 if (CIVETWEB_ENABLE_SERVER_STATS)
   add_definitions(-DUSE_SERVER_STATS)
 endif()
@@ -523,6 +534,8 @@ if (CIVETWEB_ENABLE_MEMORY_DEBUGGING)
 endif()
 if (NOT CIVETWEB_ENABLE_SSL)
   add_definitions(-DNO_SSL)
+elseif (CIVETWEB_ENABLE_MBEDTLS)
+  add_definitions(-DUSE_MBEDTLS)
 elseif (NOT CIVETWEB_ENABLE_SSL_DYNAMIC_LOADING)
   add_definitions(-DNO_SSL_DL)
 else()
@@ -627,15 +640,15 @@ configure_file(
 )
 
 install(
-  FILES 
+  FILES
     "${PROJECT_BINARY_DIR}/${PROJECT_NAME}.pc"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/pkgconfig"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
 )
 
 install(
-  FILES 
+  FILES
     "${PROJECT_BINARY_DIR}/${PROJECT_NAME}-cpp.pc"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/pkgconfig"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
 )
 
 write_basic_package_version_file(${PROJECT_NAME}-config-version.cmake
