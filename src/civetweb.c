@@ -21716,7 +21716,7 @@ mg_start2(struct mg_init_data *init, struct mg_error_data *error)
 			            error->text,
 			            error->text_buffer_size,
 			            "Invalid configuration option value: %s",
-			            cts->dd.document_roots[0]);
+			            ctx->dd.document_roots[0]);
 		}
 
 		free_context(ctx);
