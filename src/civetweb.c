@@ -6441,7 +6441,7 @@ mg_dispatch_misc_socket_callbacks(struct mg_connection * conn)
 
 		for (unsigned int i=0; i<conn->num_misc_socket_callbacks; i++) {
 			if (pfd[i].revents != 0) {
-				ret &= cb[i].handler_callback(conn, pfd[i].fd, pfd[i].revents);
+				ret &= cb[i].handler_callback(conn, (int) pfd[i].fd, pfd[i].revents);
 			}
 		}
 	}
@@ -17057,7 +17057,7 @@ sslize(struct mg_connection *conn,
 	}
 	SSL_set_app_data(conn->ssl, (char *)conn);
 
-	ret = SSL_set_fd(conn->ssl, conn->client.sock);
+	ret = SSL_set_fd(conn->ssl, (int) conn->client.sock);
 	if (ret != 1) {
 		mg_cry_internal(conn, "sslize error: %s", ssl_error());
 		SSL_free(conn->ssl);
@@ -21327,7 +21327,7 @@ mg_socketpair(int *sockA, int *sockB)
 #else
 	/** No socketpair() call is available, so we'll have to roll our own
 	 * implementation */
-	asock = socket(PF_INET, SOCK_STREAM, 0);
+	asock = (int) socket(PF_INET, SOCK_STREAM, 0);
 	if (asock >= 0) {
 		struct sockaddr_in addr;
 		struct sockaddr *pa = (struct sockaddr *)&addr;
@@ -21341,9 +21341,9 @@ mg_socketpair(int *sockA, int *sockB)
 		if ((bind(asock, pa, sizeof(addr)) == 0)
 		    && (getsockname(asock, pa, &addrLen) == 0)
 		    && (listen(asock, 1) == 0)) {
-			temp[0] = socket(PF_INET, SOCK_STREAM, 0);
+			temp[0] = (int) socket(PF_INET, SOCK_STREAM, 0);
 			if ((temp[0] >= 0) && (connect(temp[0], pa, sizeof(addr)) == 0)) {
-				temp[1] = accept(asock, pa, &addrLen);
+				temp[1] = (int) accept(asock, pa, &addrLen);
 				if (temp[1] >= 0) {
 					closesocket(asock);
 					*sockA = temp[0];

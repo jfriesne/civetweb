@@ -179,7 +179,7 @@ search_boundary(const char *buf,
 
 	/* We must do a binary search here, not a string search, since the
 	 * buffer may contain '\x00' bytes, if binary data is transferred. */
-	int clen = (int)buf_len - (int)boundary_len - boundary_start_len;
+	int clen = (int)buf_len - (int)boundary_len - (int)boundary_start_len;
 	int i;
 
 	for (i = 0; i <= clen; i++) {
